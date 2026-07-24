@@ -395,6 +395,12 @@ if [[ "$RUN_PHASE" == "all" || "$RUN_PHASE" == "deploy" ]]; then
     step "Waiting for ptp-operator rollout"
     run_quiet_with_log_dump_on_failure "kubectl-rollout-status" kubectl rollout status deployment ptp-operator -n openshift-ptp
 
+    # deploy-all may fail to create default while the webhook has no CA yet; the
+    # operator's one-shot createDefault also does not retry. Re-apply after CA
+    # injection so the patch below has an object to update.
+    step "Ensuring default ptpoperatorconfig exists"
+    run_quiet_with_log_dump_on_failure "retry-apply-ptpoperatorconfig" ./retry.sh 60 5 kubectl apply -n openshift-ptp -f ../config/samples/ptp_v1_ptpoperatorconfig.yaml
+
     # Patch ptpoperatorconfig to start events (in case it is not configured yet )
     step "Patching ptpoperatorconfig for event publishing"
     run_quiet_with_log_dump_on_failure "retry-patch-ptpoperatorconfig" ./retry.sh 60 5 kubectl patch ptpoperatorconfig default -nopenshift-ptp --type=merge --patch '{"spec": {"ptpEventConfig": {"enableEventPublisher": true, "transportHost": "http://ptp-event-publisher-service-NODE_NAME.openshift-ptp.svc.cluster.local:9043", "storageType": "local-sc"}, "daemonNodeSelector": {"node-role.kubernetes.io/worker": ""}}}'

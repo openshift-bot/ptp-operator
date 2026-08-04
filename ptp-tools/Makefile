@@ -110,9 +110,13 @@ podman-cleanall: $(foreach v, $(VALUES), podman-clean-$(v))
 .PHONY: build-image clean-image deploy-all
 
 deploy-all: 
+	cp ../config/manager/env.yaml ../config/manager/env.yaml.bak
+	cp ../config/manager/kustomization.yaml ../config/manager/kustomization.yaml.bak
 	./scripts/customize-env.sh ${IMG_PREFIX} ../config/manager
 	cd ../config/manager && $(KUSTOMIZE) edit set image controller=${IMG_PREFIX}:ptpop
-	$(KUSTOMIZE) build ../config/default | kubectl apply -f -
+	$(KUSTOMIZE) build ../config/default | kubectl apply -f - ; \
+		mv -f ../config/manager/env.yaml.bak ../config/manager/env.yaml ; \
+		mv -f ../config/manager/kustomization.yaml.bak ../config/manager/kustomization.yaml
 	$(KUSTOMIZE) build ../config/custom | kubectl apply -f -
 	# Operator creates default asynchronously; ensure it exists before patch.
 	kubectl apply -n openshift-ptp -f ../config/samples/ptp_v1_ptpoperatorconfig.yaml

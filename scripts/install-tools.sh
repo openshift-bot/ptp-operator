@@ -29,7 +29,19 @@ esac
 if [[ "${DKMS_MODE:-}" == "true" ]]; then
     if [[ "$OS_FAMILY" == "debian" ]]; then
         apt-get update -qq
-        apt-get install -y podman pciutils openvswitch-switch git openssl
+        # Pending kernel header packages may trigger DKMS autoinstall for
+        # non-running kernels, which fails if the DKMS module can't build
+        # against that kernel. Allow apt-get to exit non-zero from the DKMS
+        # hook, but verify every required package actually installed.
+        REQUIRED_PKGS=(podman pciutils openvswitch-switch git openssl)
+        apt-get install --fix-broken -y "${REQUIRED_PKGS[@]}" || true
+        for pkg in "${REQUIRED_PKGS[@]}"; do
+            status=$(dpkg-query -W -f='${db:Status-Abbrev}' "$pkg" 2>/dev/null || echo "missing")
+            if [[ "$status" != "ii "* ]]; then
+                echo "ERROR: required package '$pkg' is not fully installed (status: '$status')"
+                exit 1
+            fi
+        done
     else
         dnf install -y podman pciutils openvswitch git openssl
     fi

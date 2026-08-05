@@ -4137,8 +4137,8 @@ func getGMEvents(
 // verifyEvent looks for a particular state (string) inside a slice of StoredEventValues
 func verifyEvent(events exports.StoredEventValues, expectedState ptpEvent.SyncState) {
 	found := false
-	if state, ok := events["notification"].(string); ok {
-		if state == string(expectedState) {
+	if stateVal, ok := event.ValueByDataType(events, "notification"); ok {
+		if state, ok := stateVal.(string); ok && state == string(expectedState) {
 			found = true
 		}
 	}
@@ -4149,8 +4149,8 @@ func verifyEvent(events exports.StoredEventValues, expectedState ptpEvent.SyncSt
 // verifyMetricThreshold checks if any event has metric within a range
 func verifyMetric(events exports.StoredEventValues, value float64) {
 	found := false
-	if metricValue, ok := events["metric"].(float64); ok {
-		if metricValue == value {
+	if metricVal, ok := event.ValueByDataType(events, "metric"); ok {
+		if metricValue, ok := metricVal.(float64); ok && metricValue == value {
 			found = true
 		}
 	}

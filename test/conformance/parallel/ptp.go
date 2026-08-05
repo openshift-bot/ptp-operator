@@ -411,8 +411,10 @@ func testSyncState(soakTestConfig ptptestconfig.SoakTestConfig, fullConfig testc
 			logrus.Debugf("got %v\n", singleEvent)
 			// get event values
 			values, _ := singleEvent[exports.EventValues].(exports.StoredEventValues)
-			state, _ := values["notification"].(string)
-			clockOffset, _ := values["metric"].(float64)
+			stateVal, _ := event.ValueByDataType(values, "notification")
+			state, _ := stateVal.(string)
+			offsetVal, _ := event.ValueByDataType(values, "metric")
+			clockOffset, _ := offsetVal.(float64)
 			// create a pseudo value mapping a state to an integer (for visualization)
 			eventString := fmt.Sprintf("%s,%s,%f,%s,%d\n", singleEvent[exports.EventTimeStamp], ptpEvent.OsClockSyncStateChange, clockOffset, state, exports.ToLockStateValue[state])
 			// start counting loss of LOCK only after the clock was locked once

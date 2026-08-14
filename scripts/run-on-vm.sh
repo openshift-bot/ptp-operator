@@ -2,6 +2,9 @@
 set -euo pipefail
 
 export DKMS_MODE="${DKMS_MODE:-false}"
+# Stream child command output live (default: quiet, dump log only on failure).
+# Override with --verbose or RUN_ON_VM_VERBOSE=true|1|yes.
+RUN_ON_VM_VERBOSE="${RUN_ON_VM_VERBOSE:-false}"
 TEST_MODES="oc,bc,dualnicbc,dualnicbcha,dualfollower"
 RUN_PHASE="all"
 REGISTRY_IP=""
@@ -11,6 +14,7 @@ KEEP_TMP=true
 while [[ "${1:-}" == --* ]]; do
     case "$1" in
         --dkms)    export DKMS_MODE=true; shift ;;
+        --verbose) RUN_ON_VM_VERBOSE=true; shift ;;
         --mode)    TEST_MODES="$2"; shift 2 ;;
         --images)  RUN_PHASE="images"; shift ;;
         --deploy)  RUN_PHASE="deploy"; REGISTRY_IP="$2"; shift 2 ;;
@@ -19,6 +23,12 @@ while [[ "${1:-}" == --* ]]; do
         *) echo "Unknown flag: $1"; exit 1 ;;
     esac
 done
+
+case "${RUN_ON_VM_VERBOSE}" in
+  1|true|TRUE|yes|YES|on|ON) RUN_ON_VM_VERBOSE=true ;;
+  *) RUN_ON_VM_VERBOSE=false ;;
+esac
+export RUN_ON_VM_VERBOSE
 
 # Per-run temp directory shared by all child scripts.
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -86,6 +96,7 @@ read_ptp_tool_images() {
 }
 
 # Run with stdout/stderr captured; no output on success, On failure, print the command log.
+# With RUN_ON_VM_VERBOSE=true, stream output live (already teed to RUN_ON_VM_LOG).
 run_quiet_with_log_dump_on_failure() {
   local log_tag="$1"
   shift
@@ -94,6 +105,17 @@ run_quiet_with_log_dump_on_failure() {
   log_file="$(mktemp "${PTP_RUN_DIR}/${log_tag// /_}.XXXXXX.log")"
 
   local rc
+  if [[ "${RUN_ON_VM_VERBOSE}" == true ]]; then
+    echo -e "${COLOR_GRAY}---- BEGIN ${log_tag} (verbose) ----${COLOR_RESET} ${COLOR_GRAY}@ $(log_ts)${COLOR_RESET}"
+    set +e
+    "$@" </dev/null
+    rc=$?
+    set -e
+    echo -e "${COLOR_GRAY}---- END ${log_tag} (verbose, exit ${rc}) ----${COLOR_RESET} ${COLOR_GRAY}@ $(log_ts)${COLOR_RESET}"
+    rm -f "${log_file}"
+    return "${rc}"
+  fi
+
   if "$@" >"${log_file}" 2>&1 </dev/null; then
     rc=0
   else

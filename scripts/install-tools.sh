@@ -33,6 +33,9 @@ if [[ "${DKMS_MODE:-}" == "true" ]]; then
         # non-running kernels, which fails if the DKMS module can't build
         # against that kernel. Allow apt-get to exit non-zero from the DKMS
         # hook, but verify every required package actually installed.
+        # Keep skopeo out of the required set: on Ubuntu CI it can pull
+        # containers-common with unmet oci-runtime deps and abort the whole
+        # apt transaction (leaving openvswitch-switch uninstalled).
         REQUIRED_PKGS=(podman pciutils openvswitch-switch git openssl)
         apt-get install --fix-broken -y "${REQUIRED_PKGS[@]}" || true
         for pkg in "${REQUIRED_PKGS[@]}"; do
@@ -42,8 +45,13 @@ if [[ "${DKMS_MODE:-}" == "true" ]]; then
                 exit 1
             fi
         done
+        # Optional: deploy-prometheus falls back to podman when skopeo is absent.
+        apt-get install --fix-broken -y skopeo || \
+            echo "WARNING: skopeo not installed; deploy-prometheus will use podman fallback"
     else
         dnf install -y podman pciutils openvswitch git openssl
+        dnf install -y skopeo || \
+            echo "WARNING: skopeo not installed; deploy-prometheus will use podman fallback"
     fi
 
     # kubectl

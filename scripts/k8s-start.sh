@@ -58,3 +58,8 @@ kubectl create namespace openshift-ptp
 
 # Configure openvswitch and netdevsim interfaces 
 ./configSwitch2.sh "$VM_IP"
+
+# Per-node stand-in mock PHCs for virtual CLOCK_REALTIME (phc2sys shim).
+if [[ "${DKMS_MODE:-}" == "true" && "${PTP_VRT_ENABLE:-true}" == "true" ]]; then
+    ./create-vrt-clocks.sh
+fi

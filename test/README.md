@@ -17,9 +17,9 @@ To run the conformance tests, first set the following environment variables:
 - **MAX_OFFSET_IN_NS**: maximum offset in nanoseconds between a master and a slave clock when testing clock accuracy. Also used as LocalMaxHoldoverOffset for E810 plugin. Default is 100
 - **MIN_OFFSET_IN_NS**: minimum offset in nanoseconds between a master and a slave clock when testing clock accuracy. Default is -100
 - **MAX_IN_SPEC_OFFSET_NS**: maximum in-spec offset in nanoseconds for E810 plugin holdover specification threshold. Default is 100
-- **ENABLE_PTP_EVENT**: enable event based tests.
-- **EVENT_API_VERSION**: passes the default REST-API version for the event based tests. Set this to "2.0" for 4.16+ PUT, "1.0" for 4.15 and earlier. If this is not set, default value "2.0" is used.
-- **ENABLE_V1_REGRESSION**: enable V1 regression for event based tests. For 4.16 and 4.17, event based tests will be repeated the second time with v1 REST-API. These tests are marked with "v1 regression".
+- **ENABLE_PTP_EVENT**: enable event-based tests (required for OsClockSyncStateChange consumer assertions; CLOCK_REALTIME metric asserts still run without it).
+- **EVENT_API_VERSION**: passes the default REST-API version for the event-based tests. Set this to "2.0" for 4.16+ PUT, "1.0" for 4.15 and earlier. If this is not set, default value "2.0" is used.
+- **ENABLE_V1_REGRESSION**: enable V1 regression for event-based tests. For 4.16 and 4.17, event-based tests will be repeated the second time with v1 REST-API. These tests are marked with "v1 regression".
 - **EXTERNAL_GM**: enables external grandmaster scenarios
 - **PTP_TEST_CONFIG_FILE**: configuration file to set for instance min/max offsets in ptpconfig. Example is at[link](test/conformance/config/ptptestconfig.yaml)
 - **COLLECT_POD_LOGS**: enable automatic collection of raw container logs during test execution (default: false). See [Pod Log Collection](#pod-log-collection) section for details.
@@ -34,6 +34,13 @@ So for instance to run in discovery mode the command line could look like this:
 ```
 KUBECONFIG="/home/user/.kube/config" PTP_TEST_MODE=Discovery make functests
 ```
+
+To exercise BC reverse-sync `os-clock-sync-state` FREERUN (serial outage recovery test) with events:
+```bash
+KUBECONFIG="/home/user/.kube/config" PTP_TEST_MODE=BC ENABLE_PTP_EVENT=true SKIP_INTERFACES="eno1,ens2f1" make functests
+```
+(`DualNICBC` is also valid; DualNICBCHA is skipped for this It. Needs a cloud-event-proxy build with reverse-sync FREERUN detection.
+On Kind/netdevsim this It runs when VRT is present (`run-tests.sh` sets `DisableAllSlaveRTUpdate: false` if `DKMS_MODE=true` or VRT device files already exist); otherwise it skips because `-a -r` is stripped and workers share host `CLOCK_REALTIME`.)
 
 To run all the tests
 ```
@@ -485,6 +492,22 @@ note: parameter0 ... parameterN are integers representing an interface. 0 means 
 
 
 # Running PTP tests on amazon EC2 or local VM
+## Virtual CLOCK_REALTIME on Kind/netdevsim
+
+Kind workers share the host `CLOCK_REALTIME`. For DKMS CI, each worker gets a
+stand-in mock PHC (`scripts/create-vrt-clocks.sh`) and the linuxptp image wraps
+`phc2sys` with an LD_PRELOAD shim (`scripts/ptp-vrt/`) so `-a -r` steers that
+PHC while logs still say `CLOCK_REALTIME`.
+
+- Created at cluster install when `DKMS_MODE=true` and `PTP_VRT_ENABLE=true` (default).
+- `PTP_VRT_ENABLE=false` takes precedence over `DKMS_MODE=true` and keeps
+  `DisableAllSlaveRTUpdate: true`, so local DKMS runs with VRT disabled do not
+  expect slave RT updates.
+- `run-tests.sh` sets `DisableAllSlaveRTUpdate: false` when `DKMS_MODE=true` or when
+  VRT device files are already present (so re-runs need not pass `DKMS_MODE`),
+  unless `PTP_VRT_ENABLE=false`.
+- Host `date` / real RT are not moved. See `scripts/ptp-vrt/README.md`.
+
 ## Using netdevsim framework to simulate PHC
 Existing netdevsim framework defines simulated clocks (not truly functional), supports virtual interfaces capable of transmitting frames. See: [link](https://developers.redhat.com/blog/2018/10/22/introduction-to-linux-interfaces-for-virtual-networking?source=sso#netdevsim)
 Maciek Machnikowski(Nvidia)/Milena Olech (intel) video describes a simple netdevsim kernel patch to add real simulated clocks (phc_mock) to simulate ptp: [link]( https://www.youtube.com/watch?v=txgekOBen6c)
@@ -528,6 +551,8 @@ The following diagram shows an example of configuration that can be created in t
 ./run-tests.sh --kind <serial|parallel|both> --mode <modes> [--loglevel <level>] [--linuxptp-daemon-image <url>]
 ```
 - `configSwitch2.sh`: configures virtual Ethernet switch (openvswitch) container
+- `create-vrt-clocks.sh`: per-node stand-in mock PHCs for virtual CLOCK_REALTIME (DKMS CI)
+- `ptp-vrt/`: phc2sys LD_PRELOAD shim + wrapper (baked into linuxptp-daemon image)
 - `fix-certs.sh`: Fix certificates for the linuxptp-daemon in Kind
 - `install-tools.sh`: install tools such as ginkgo, go, ...
 - `prepare-kind.sh`: basic configuration to make the kind clusted look like a openshift cluster

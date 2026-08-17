@@ -17,6 +17,8 @@ env:
   DKMS_VER: "6.9.5"
   DKMS_REPO: https://github.com/redhat-cne/netdevsim-dkms.git
   DKMS_BRANCH: main
+  # Optional: set to "true" to stream run-on-vm child command logs.
+  # RUN_ON_VM_VERBOSE: "true"
 
 jobs:
   # ------------------------------------------------------------------
@@ -169,6 +171,8 @@ jobs:
             "https://github.com/containers/crun/releases/download/${CRUN_VER}/crun-${CRUN_VER}-linux-amd64"
           sudo chmod +x /usr/bin/crun
           crun --version | head -1
+          # Serialize podman CLI via one API server (avoids Kind exec SQLite deadlock).
+          sudo bash "$GITHUB_WORKSPACE/scripts/start-podman-api-service.sh"
 
       - name: Copy checkout to /root/ptp-operator
         run: sudo cp -a "$GITHUB_WORKSPACE" /root/ptp-operator
@@ -178,7 +182,7 @@ jobs:
           sudo bash -l <<'BUILD'
           set -euo pipefail
           set -x
-          export PATH=/usr/local/go/bin:/root/go/bin:$PATH
+          export PATH=/usr/local/ptp-podman-wrap:/usr/local/bin:/usr/local/go/bin:/root/go/bin:$PATH
           export KIND_EXPERIMENTAL_PROVIDER=podman
 
           VM_IP=$(hostname -I | awk '{print $1}')
@@ -234,6 +238,8 @@ jobs:
             "https://github.com/containers/crun/releases/download/${CRUN_VER}/crun-${CRUN_VER}-linux-amd64"
           sudo chmod +x /usr/bin/crun
           crun --version | head -1
+          # Serialize podman CLI via one API server (avoids Kind exec SQLite deadlock).
+          sudo bash "$GITHUB_WORKSPACE/scripts/start-podman-api-service.sh"
 
       - name: Install OpenShift CLI (oc)
         run: |
@@ -279,7 +285,7 @@ jobs:
           sudo bash -l <<'LOAD'
           set -euo pipefail
           set -x
-          export PATH=/usr/local/go/bin:/root/go/bin:$PATH
+          export PATH=/usr/local/ptp-podman-wrap:/usr/local/bin:/usr/local/go/bin:/root/go/bin:$PATH
           export KIND_EXPERIMENTAL_PROVIDER=podman
 
           VM_IP=$(hostname -I | awk '{print $1}')
@@ -301,7 +307,7 @@ jobs:
           sudo bash -l <<'DEPLOY'
           set -euo pipefail
           set -x
-          export PATH=/usr/local/go/bin:/root/go/bin:$PATH
+          export PATH=/usr/local/ptp-podman-wrap:/usr/local/bin:/usr/local/go/bin:/root/go/bin:$PATH
           export KIND_EXPERIMENTAL_PROVIDER=podman
 
           VM_IP=$(hostname -I | awk '{print $1}')

@@ -5,6 +5,13 @@ set -euo pipefail
 VM_IP=$1
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Kind runs parallel `podman exec`; daemonless podman deadlocks on SQLite.
+# Prefer a single API server when the helper is present (CI installs it).
+if [[ -f "${SCRIPT_DIR}/start-podman-api-service.sh" ]]; then
+  bash "${SCRIPT_DIR}/start-podman-api-service.sh" || true
+fi
+export PATH="/usr/local/ptp-podman-wrap:/usr/local/bin:${PATH}"
+
 # Delete cluster
 kind delete cluster --name kind-netdevsim
 

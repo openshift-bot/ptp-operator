@@ -702,11 +702,12 @@ func initAndSolveProblems() {
 
 	// T-BC with local GM: WPC NIC required, receiver, two transmitters on same NIC, local GM
 	data.problems[AlgoTelcoBCString] = &[][][]int{
-		{{int(solver.StepIsWPCNic), 1, 0}},    // step1: T-BC receiver must be on WPC NIC
-		{{int(solver.StepSameNic), 2, 0, 1}},  // step3: transmitter 1 on same NIC as receiver
-		{{int(solver.StepSameNic), 2, 0, 2}},  // step4: transmitter 2 on same NIC as receiver
-		{{int(solver.StepSameLan2), 2, 0, 3}}, // step5: local grandmaster on same LAN as receiver
-		{{int(solver.StepIsWPCNic), 1, 3}},    // step6: local grandmaster is a WPC NIC
+		{{int(solver.StepIsWPCNic), 1, 0}},   // step1: T-BC receiver must be on WPC NIC
+		{{int(solver.StepSameNic), 2, 0, 1}}, // step2: transmitter 1 on same NIC as receiver
+		{{int(solver.StepSameNic), 2, 0, 2}}, // step3: transmitter 2 on same NIC as receiver
+		{{int(solver.StepSameLan2), 2, 0, 3}, // step4: local grandmaster on same LAN as receiver
+			{int(solver.StepSameNode), 2, 0, 3, solver.Negative}}, // but NOT on the same node
+		{{int(solver.StepIsWPCNic), 1, 3}}, // step5: local grandmaster is a WPC NIC
 	}
 
 	// T-BC with external GM: WPC NIC required, PTP receiver, two transmitters on same NIC
@@ -726,7 +727,8 @@ func initAndSolveProblems() {
 		{{int(solver.StepIsWPCNic), 1, 1}},    // step4: T-BC receiver must be on WPC NIC
 		{{int(solver.StepSameNic), 2, 1, 2}},  // step5: transmitter 1 on same NIC as receiver
 		{{int(solver.StepSameNic), 2, 1, 3}},  // step6: transmitter 2 on same NIC as receiver
-		{{int(solver.StepSameLan2), 2, 1, 4}}, // step7: local grandmaster on same LAN as receiver
+		{{int(solver.StepSameLan2), 2, 1, 4}, // step7: local grandmaster on same LAN as receiver
+			{int(solver.StepSameNode), 2, 1, 4, solver.Negative}}, // but NOT on the same node
 	}
 
 	// T-BC with slaves and external GM: WPC NIC required, slave, receiver, two transmitters on same NIC
@@ -1365,11 +1367,12 @@ func PtpConfigOC(isExtGM bool) error {
 	logrus.Infof("Configuring best solution= %s", BestSolution)
 	switch BestSolution {
 	case AlgoOCString:
+		solutionIdx := preferDiffNodeSolution(BestSolution, Grandmaster, Slave1)
 		grandmaster = (*data.testClockRolesAlgoMapping[BestSolution])[Grandmaster]
 		slave1 = (*data.testClockRolesAlgoMapping[BestSolution])[Slave1]
 
-		gmIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][grandmaster]]
-		slave1If := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][slave1]]
+		gmIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][grandmaster]]
+		slave1If := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][slave1]]
 
 		err := CreatePtpConfigGrandMaster(gmIf.NodeName,
 			gmIf.IfName)
@@ -1419,12 +1422,13 @@ func PtpConfigDualFollower(isExtGM bool) error {
 	logrus.Infof("Configuring best solution= %s", BestSolution)
 	switch BestSolution {
 	case AlgoDualFollowerString:
+		solutionIdx := preferDiffNodeSolution(BestSolution, Grandmaster, Slave1)
 		grandmaster = (*data.testClockRolesAlgoMapping[BestSolution])[Grandmaster]
 		slave1 = (*data.testClockRolesAlgoMapping[BestSolution])[Slave1]
 		slave2 = (*data.testClockRolesAlgoMapping[BestSolution])[Slave2]
-		gmIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][grandmaster]]
-		slave1If := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][slave1]]
-		slave2If := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][slave2]]
+		gmIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][grandmaster]]
+		slave1If := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][slave1]]
+		slave2If := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][slave2]]
 
 		err := CreatePtpConfigGrandMaster(gmIf.NodeName,
 			gmIf.IfName)
@@ -1486,15 +1490,16 @@ func PtpConfigBC(isExtGM bool) error {
 	logrus.Infof("Configuring best solution= %s", BestSolution)
 	switch BestSolution {
 	case AlgoBCWithSlavesString:
+		solutionIdx := preferDiffNodeSolution(BestSolution, Grandmaster, BC1Slave, Slave1)
 		grandmaster = (*data.testClockRolesAlgoMapping[BestSolution])[Grandmaster]
 		bc1Master = (*data.testClockRolesAlgoMapping[BestSolution])[BC1Master]
 		bc1Slave = (*data.testClockRolesAlgoMapping[BestSolution])[BC1Slave]
 		slave1 = (*data.testClockRolesAlgoMapping[BestSolution])[Slave1]
 
-		gmIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][grandmaster]]
-		bc1MasterIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][bc1Master]]
-		bc1SlaveIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][bc1Slave]]
-		slave1If := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][slave1]]
+		gmIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][grandmaster]]
+		bc1MasterIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][bc1Master]]
+		bc1SlaveIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][bc1Slave]]
+		slave1If := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][slave1]]
 
 		err := CreatePtpConfigGrandMaster(gmIf.NodeName,
 			gmIf.IfName)
@@ -1515,13 +1520,14 @@ func PtpConfigBC(isExtGM bool) error {
 		}
 
 	case AlgoBCString:
+		solutionIdx := preferDiffNodeSolution(BestSolution, Grandmaster, BC1Slave)
 		grandmaster = (*data.testClockRolesAlgoMapping[BestSolution])[Grandmaster]
 		bc1Master = (*data.testClockRolesAlgoMapping[BestSolution])[BC1Master]
 		bc1Slave = (*data.testClockRolesAlgoMapping[BestSolution])[BC1Slave]
 
-		gmIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][grandmaster]]
-		bc1MasterIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][bc1Master]]
-		bc1SlaveIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][bc1Slave]]
+		gmIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][grandmaster]]
+		bc1MasterIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][bc1Master]]
+		bc1SlaveIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][bc1Slave]]
 
 		err := CreatePtpConfigGrandMaster(gmIf.NodeName,
 			gmIf.IfName)
@@ -1693,6 +1699,7 @@ func PtpConfigDualNicBC(isExtGM bool, phc2SysHaEnabled bool) error {
 	logrus.Infof("Configuring best solution= %s", BestSolution)
 	switch BestSolution {
 	case AlgoDualNicBCWithSlavesString:
+		solutionIdx := preferDiffNodeSolution(BestSolution, Grandmaster, BC1Slave, Slave1)
 		grandmaster = (*data.testClockRolesAlgoMapping[BestSolution])[Grandmaster]
 		bc1Master = (*data.testClockRolesAlgoMapping[BestSolution])[BC1Master]
 		bc1Slave = (*data.testClockRolesAlgoMapping[BestSolution])[BC1Slave]
@@ -1701,13 +1708,13 @@ func PtpConfigDualNicBC(isExtGM bool, phc2SysHaEnabled bool) error {
 		bc2Slave = (*data.testClockRolesAlgoMapping[BestSolution])[BC2Slave]
 		slave2 = (*data.testClockRolesAlgoMapping[BestSolution])[Slave2]
 
-		gmIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][grandmaster]]
-		bc1MasterIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][bc1Master]]
-		bc1SlaveIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][bc1Slave]]
-		slave1If := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][slave1]]
-		bc2MasterIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][bc2Master]]
-		bc2SlaveIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][bc2Slave]]
-		slave2If := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][slave2]]
+		gmIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][grandmaster]]
+		bc1MasterIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][bc1Master]]
+		bc1SlaveIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][bc1Slave]]
+		slave1If := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][slave1]]
+		bc2MasterIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][bc2Master]]
+		bc2SlaveIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][bc2Slave]]
+		slave2If := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][slave2]]
 
 		err := CreatePtpConfigGrandMaster(gmIf.NodeName,
 			gmIf.IfName)
@@ -1739,17 +1746,18 @@ func PtpConfigDualNicBC(isExtGM bool, phc2SysHaEnabled bool) error {
 		}
 
 	case AlgoDualNicBCString:
+		solutionIdx := preferDiffNodeSolution(BestSolution, Grandmaster, BC1Slave)
 		grandmaster = (*data.testClockRolesAlgoMapping[BestSolution])[Grandmaster]
 		bc1Master = (*data.testClockRolesAlgoMapping[BestSolution])[BC1Master]
 		bc1Slave = (*data.testClockRolesAlgoMapping[BestSolution])[BC1Slave]
 		bc2Master = (*data.testClockRolesAlgoMapping[BestSolution])[BC2Master]
 		bc2Slave = (*data.testClockRolesAlgoMapping[BestSolution])[BC2Slave]
 
-		gmIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][grandmaster]]
-		bc1MasterIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][bc1Master]]
-		bc1SlaveIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][bc1Slave]]
-		bc2MasterIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][bc2Master]]
-		bc2SlaveIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][bc2Slave]]
+		gmIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][grandmaster]]
+		bc1MasterIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][bc1Master]]
+		bc1SlaveIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][bc1Slave]]
+		bc2MasterIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][bc2Master]]
+		bc2SlaveIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][bc2Slave]]
 
 		err := CreatePtpConfigGrandMaster(gmIf.NodeName,
 			gmIf.IfName)
@@ -1888,6 +1896,51 @@ func PtpConfigTelcoGM(isExtGM bool) error {
 	return nil
 }
 
+// preferDiffNodeSolution selects a solver solution where the given roles are placed on
+// distinct cluster nodes. Running profiles that should be independent (e.g. a Grandmaster
+// and a Boundary Clock) on the same node causes operational issues such as the leap manager
+// losing track of the GM ptp4l config path, or event handlers conflicting.
+//
+// The function iterates through all solutions found by the graph solver for problemName
+// and returns the index of the first solution in which every role in roles maps to a
+// different node. If no such solution exists (e.g. a single-node lab), it falls back to
+// FirstSolution and logs a warning so the test can still run.
+//
+// Usage:
+//
+//	solutionIdx := preferDiffNodeSolution(BestSolution, Grandmaster, BC1Slave)
+//	solutionIdx := preferDiffNodeSolution(BestSolution, Grandmaster, BC1Slave, Slave1)
+func preferDiffNodeSolution(problemName string, roles ...TestIfClockRoles) int {
+	solutions := *data.solutions[problemName]
+	roleMapping := *data.testClockRolesAlgoMapping[problemName]
+	ifList := GlobalConfig.L2Config.GetPtpIfList()
+
+	roleIndices := make([]int, len(roles))
+	for i, r := range roles {
+		roleIndices[i] = roleMapping[int(r)]
+	}
+
+	for idx, sol := range solutions {
+		nodes := make(map[string]bool)
+		allDifferent := true
+		for _, ri := range roleIndices {
+			nodeName := ifList[sol[ri]].NodeName
+			if nodes[nodeName] {
+				allDifferent = false
+				break
+			}
+			nodes[nodeName] = true
+		}
+		if allDifferent {
+			logrus.Infof("%s: selected solution %d with roles on different nodes", problemName, idx)
+			return idx
+		}
+	}
+
+	logrus.Warnf("%s: no solution with all specified roles on different nodes, using first solution as fallback", problemName)
+	return FirstSolution
+}
+
 func PtpConfigTelcoBC(isExtGM bool) error {
 	// Select the appropriate solution based on whether external GM is used
 	BestSolution := AlgoTelcoBCString
@@ -1899,14 +1952,18 @@ func PtpConfigTelcoBC(isExtGM bool) error {
 		return fmt.Errorf("no T-BC solution found for %s", BestSolution)
 	}
 
+	// The solver's StepSameNode/Negative constraint already guarantees that the
+	// T-BC receiver and local GM are on different nodes, so no soft preference needed.
+	solutionIdx := FirstSolution
+
 	// Get interface indices
 	bc1Slave := (*data.testClockRolesAlgoMapping[BestSolution])[BC1Slave]
 	bc1Master := (*data.testClockRolesAlgoMapping[BestSolution])[BC1Master]
 	bc2Master := (*data.testClockRolesAlgoMapping[BestSolution])[BC2Master]
 
-	bc1SlaveIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][bc1Slave]]
-	bc1MasterIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][bc1Master]]
-	bc2MasterIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][bc2Master]]
+	bc1SlaveIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][bc1Slave]]
+	bc1MasterIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][bc1Master]]
+	bc2MasterIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][bc2Master]]
 
 	// Ensure the leading (first) interface is on the same NIC as the slave interface,
 	// using PTP capabilities collected by l2discovery-lib.
@@ -1937,7 +1994,7 @@ func PtpConfigTelcoBC(isExtGM bool) error {
 	// Create local Grandmaster if not using external GM
 	if !isExtGM {
 		grandmaster := (*data.testClockRolesAlgoMapping[BestSolution])[Grandmaster]
-		gmIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][grandmaster]]
+		gmIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][grandmaster]]
 		err = CreatePtpConfigGrandMaster(gmIf.NodeName, gmIf.IfName)
 		if err != nil {
 			logrus.Errorf("Error creating local Grandmaster ptpconfig: %s", err)

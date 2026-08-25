@@ -1,0 +1,8 @@
+# CI run logs live under the repo and grow while parallel image builds run.
+# Dockerfile.ptpop uses `COPY .. .` with the repo root as context; including
+# these logs causes intermittent: archive/tar: write too long
+.local-runs
+
+# Not needed in image build context
+.git
+.github

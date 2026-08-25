@@ -688,6 +688,32 @@ func PushInitialEvents(eventTypes []string, timeout time.Duration) (missing []st
 	}
 	return missing, nil
 }
+
+// compositeEventKey builds a unique map key from ResourceAddress and DataType.
+// This avoids collisions when multiple values share the same ResourceAddress
+// (e.g., OsClockSyncStateChange has both "notification" and "metric" for
+// the same CLOCK_REALTIME resource) or the same DataType (e.g., future BC
+// clock class events with metrics for different ptp4l instances).
+func compositeEventKey(resource, dataType string) string {
+	if resource == "" {
+		return dataType
+	}
+	return resource + "/" + dataType
+}
+
+// ValueByDataType finds the first value in a StoredEventValues map whose key
+// ends with "/{dataType}" or equals dataType exactly (for legacy events with
+// empty ResourceAddress).
+func ValueByDataType(values exports.StoredEventValues, dataType string) (interface{}, bool) {
+	suffix := "/" + dataType
+	for key, val := range values {
+		if strings.HasSuffix(key, suffix) || key == dataType {
+			return val, true
+		}
+	}
+	return nil, false
+}
+
 func createStoredEvent(data []byte) (aStoredEvent exports.StoredEvent, aType string, err error) {
 	apiVersion := ptphelper.PtpEventEnabled()
 	if apiVersion == 1 {
@@ -709,10 +735,7 @@ func createStoredEvent(data []byte) (aStoredEvent exports.StoredEvent, aType str
 
 		values := exports.StoredEventValues{}
 		for _, v := range e.Data.Values {
-			key := v.Resource
-			if key == "" {
-				key = string(v.DataType)
-			}
+			key := compositeEventKey(v.Resource, string(v.DataType))
 			values[key] = v.Value
 		}
 		return exports.StoredEvent{exports.EventTimeStamp: e.Time, exports.EventType: e.Type, exports.EventSource: e.Source, exports.EventValues: values}, e.Type, nil
@@ -741,13 +764,7 @@ func createStoredEvent(data []byte) (aStoredEvent exports.StoredEvent, aType str
 	}
 	values := exports.StoredEventValues{}
 	for _, v := range d.Values {
-		// Use ResourceAddress as key to avoid collisions when multiple
-		// values share the same data_type (e.g., BC mode clock class
-		// events have two "metric" values for different ptp4l instances).
-		key := v.Resource
-		if key == "" {
-			key = string(v.DataType)
-		}
+		key := compositeEventKey(v.Resource, string(v.DataType))
 		values[key] = v.Value
 	}
 	aType = e.Context.GetType()

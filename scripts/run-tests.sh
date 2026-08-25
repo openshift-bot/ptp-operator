@@ -8,6 +8,7 @@
 #
 # Optional flags:
 #   --loglevel <level>              PTP log level (default: info)
+#   --focus <regex>                 Pass through to ginkgo --focus (run matching specs only)
 #   --linuxptp-daemon-image <url>   Full image URL for the linuxptp-daemon test pod.
 #                                   When omitted, pmc pod tests are skipped.
 #   --must-gather-image <url>       Full image URL for the ptp must-gather image.
@@ -19,7 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GINKGO_HEADLINE_REWRITE="${SCRIPT_DIR}/ginkgo-headline-rewrite.sh"
 
 usage() {
-  echo "Usage: $0 --kind <serial|parallel|both> --mode <modes> [--loglevel <level>] [--linuxptp-daemon-image <url>] [--must-gather-image <url>]"
+  echo "Usage: $0 --kind <serial|parallel|both> --mode <modes> [--focus <regex>] [--loglevel <level>] [--linuxptp-daemon-image <url>] [--must-gather-image <url>]"
   exit 1
 }
 
@@ -28,6 +29,7 @@ TEST_MODES_RAW=""
 PTP_LOG_LEVEL="info"
 LINUXPTP_DAEMON_IMAGE=""
 MUST_GATHER_IMAGE=""
+GINKGO_FOCUS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -37,6 +39,9 @@ while [[ $# -gt 0 ]]; do
       TEST_MODES_RAW="$2"; shift 2 ;;
     --loglevel)
       PTP_LOG_LEVEL="$2"; shift 2 ;;
+    --focus)
+      [[ $# -ge 2 ]] || usage
+      GINKGO_FOCUS="$2"; shift 2 ;;
     --linuxptp-daemon-image)
       LINUXPTP_DAEMON_IMAGE="$2"; shift 2 ;;
     --must-gather-image)
@@ -67,15 +72,56 @@ export MIN_OFFSET_IN_NS="${MIN_OFFSET_IN_NS:--10000}"
 export COLLECT_POD_LOGS="${COLLECT_POD_LOGS:-true}"
 export LOG_ARTIFACTS_DIR="${LOG_ARTIFACTS_DIR:-${JUNIT_OUTPUT_DIR}/pod-logs}"
 
-cat <<EOF >config.yaml
+# With VRT, each Kind worker disciplines its own stand-in mock PHC instead of
+# the shared host CLOCK_REALTIME, so slave phc2sys -a -r is safe.
+# Enable RT update when:
+#   - DISABLE_SLAVE_RT_UPDATE is set explicitly, or
+#   - PTP_VRT_ENABLE=false → keep disabled, or
+#   - DKMS_MODE=true (install/CI path), or
+#   - VRT device files already exist from a prior cluster install
+#     (re-running ./run-tests.sh without DKMS_MODE).
+vrt_already_present() {
+  local pod ns=openshift-ptp
+  while read -r pod; do
+    [[ -z "$pod" ]] && continue
+    if kubectl exec -n "$ns" "$pod" -c linuxptp-daemon-container -- \
+        test -s /var/run/vrt/device &>/dev/null; then
+      return 0
+    fi
+  done < <(kubectl get pods -n "$ns" -l app=linuxptp-daemon \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
+
+  local node
+  for node in kind-netdevsim-worker kind-netdevsim-worker2 kind-netdevsim-worker3; do
+    if podman exec "$node" test -s /var/run/ptp/vrt/device &>/dev/null ||
+      docker exec "$node" test -s /var/run/ptp/vrt/device &>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+if [[ -n "${DISABLE_SLAVE_RT_UPDATE:-}" ]]; then
+  :
+elif [[ "${PTP_VRT_ENABLE:-true}" != "true" ]]; then
+  DISABLE_SLAVE_RT_UPDATE=true
+elif [[ "${DKMS_MODE:-}" == "true" ]] || vrt_already_present; then
+  DISABLE_SLAVE_RT_UPDATE=false
+else
+  DISABLE_SLAVE_RT_UPDATE=true
+fi
+echo "DisableAllSlaveRTUpdate=${DISABLE_SLAVE_RT_UPDATE}"
+
+CONFIG_YAML="$(mktemp "${PTP_RUN_DIR:-/tmp}/ptp-config.XXXXXX.yaml")"
+cat <<EOF >"${CONFIG_YAML}"
 global:
   maxoffset: $MAX_OFFSET_IN_NS
   minoffset: $MIN_OFFSET_IN_NS
   holdover_timeout: 5
-  DisableAllSlaveRTUpdate: true
+  DisableAllSlaveRTUpdate: ${DISABLE_SLAVE_RT_UPDATE}
 EOF
 export USE_CONTAINER_CMDS=
-export PTP_TEST_CONFIG_FILE="$(pwd)/config.yaml"
+export PTP_TEST_CONFIG_FILE="${CONFIG_YAML}"
 export PTP_LOG_LEVEL
 export GOFLAGS=-mod=vendor
 export KEEP_PTPCONFIG="${KEEP_PTPCONFIG:-true}"
@@ -132,6 +178,7 @@ run_must_gather() {
 
 on_exit() {
   local exit_code=$?
+  rm -f "${CONFIG_YAML:-}"
   if [[ ${exit_code} -ne 0 ]]; then
     echo "Script failed with exit code ${exit_code}, collecting must-gather..."
     run_must_gather
@@ -185,6 +232,10 @@ run_ginkgo_suite() {
     --junit-report="${junit_base}_${mode}_${suite_kind}.xml"
     -v
   )
+
+  if [[ -n "${GINKGO_FOCUS}" ]]; then
+    ginkgo_args+=(--focus="${GINKGO_FOCUS}")
+  fi
 
   for skip in "${SKIP_PATTERNS[@]}"; do
     ginkgo_args+=(--skip="${skip}")

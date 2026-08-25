@@ -135,6 +135,53 @@ func CheckClockState(state MetricClockState, aIf string, nodeName *string) (err 
 	return nil
 }
 
+// CheckClockRealTimeState verifies openshift_ptp_clock_state for
+// iface=CLOCK_REALTIME, process=phc2sys on the given node.
+func CheckClockRealTimeState(state MetricClockState, nodeName *string) error {
+	if nodeName == nil || *nodeName == "" {
+		return fmt.Errorf("nodeName is required")
+	}
+	ptpPods, err := client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(context.Background(), metav1.ListOptions{LabelSelector: "app=linuxptp-daemon"})
+	if err != nil {
+		return err
+	}
+	for index := range ptpPods.Items {
+		if ptpPods.Items[index].Spec.NodeName != *nodeName {
+			continue
+		}
+		buf, _, err := pods.ExecCommand(client.Client, false, &ptpPods.Items[index], pkg.PtpContainerName, []string{"curl", "-s", metricsEndPoint})
+		if err != nil {
+			return fmt.Errorf("error fetching metrics for CLOCK_REALTIME: %w", err)
+		}
+		metricsText := buf.String()
+		for _, line := range strings.Split(metricsText, "\n") {
+			if !strings.HasPrefix(line, OpenshiftPtpClockState+"{") {
+				continue
+			}
+			if !strings.Contains(line, `iface="CLOCK_REALTIME"`) ||
+				!strings.Contains(line, `process="phc2sys"`) ||
+				!strings.Contains(line, fmt.Sprintf(`node="%s"`, *nodeName)) {
+				continue
+			}
+			parts := strings.Fields(line)
+			if len(parts) != 2 {
+				continue
+			}
+			clockStateInt, err := strconv.Atoi(parts[1])
+			if err != nil {
+				return fmt.Errorf("error strconv for CLOCK_REALTIME clock state %q: %w", parts[1], err)
+			}
+			if MetricClockState(clockStateInt) != state {
+				return fmt.Errorf("CLOCK_REALTIME clock state expected=%d(%s) observed=%d(%s)",
+					state, state.String(), clockStateInt, MetricClockState(clockStateInt).String())
+			}
+			return nil
+		}
+		return fmt.Errorf("openshift_ptp_clock_state iface=CLOCK_REALTIME process=phc2sys not found on node %s", *nodeName)
+	}
+	return fmt.Errorf("linuxptp-daemon pod not found on node %s", *nodeName)
+}
+
 // This method checks the state of the clock with specified interface
 func CheckClockRole(roles []MetricRole, Ifs []string, nodeName *string) (err error) {
 	if len(roles) != len(Ifs) {
@@ -176,6 +223,33 @@ func GetClockIfRoles(Ifs []string, nodeName *string) (roleInt []MetricRole, err 
 	return roleInt, nil
 }
 
+// getIfaceAlias generates the PHC iface alias used in openshift_ptp_* metrics.
+// Must stay aligned with linuxptp-daemon/cloud-event-proxy GetAlias:
+//
+//	ens2f0 -> ens2fx, ens2f0np0 -> ens2fx, ens1f0.100 -> ens1fx.100
+func getIfaceAlias(ifname string) string {
+	if ifname == "" {
+		return ""
+	}
+	if alreadyAliasedPattern.MatchString(ifname) {
+		return ifname
+	}
+	matches := ifaceAliasPattern.FindStringSubmatch(ifname)
+	if len(matches) < 3 {
+		return ifname
+	}
+	alias := matches[1] + "x"
+	if len(matches) > 3 && matches[3] != "" {
+		alias += matches[3]
+	}
+	return alias
+}
+
+var (
+	alreadyAliasedPattern = regexp.MustCompile(`^(.+?)x(\..+)?$`)
+	ifaceAliasPattern     = regexp.MustCompile(`^(.+?)(\d+)(?:np\d+)?(\..+)?$`)
+)
+
 // gets a metric value string for a given node and interface
 func getMetric(nodeName, aIf, metricName string) (metric string, err error) {
 	const (
@@ -201,11 +275,12 @@ func getMetric(nodeName, aIf, metricName string) (metric string, err error) {
 		metrics := buf.String()
 		node := ptpPods.Items[index].Spec.NodeName
 
-		// Build a list of interface names to try: first the original, then the aliased (masked) version.
-		// Cards with a PHC per port keep the original name; cards sharing a PHC use the masked alias.
+		// Build a list of interface names to try: first the original, then the PHC alias.
+		// Cards with a PHC per port keep the original name; cards sharing a PHC use the masked alias
+		// (e.g. ens2f0 -> ens2fx, ens2f0np0 -> ens2fx).
 		ifCandidates := []string{aIf}
-		aliasedIf := aIf[:len(aIf)-1] + "x"
-		if aliasedIf != aIf {
+		aliasedIf := getIfaceAlias(aIf)
+		if aliasedIf != "" && aliasedIf != aIf {
 			ifCandidates = append(ifCandidates, aliasedIf)
 		}
 

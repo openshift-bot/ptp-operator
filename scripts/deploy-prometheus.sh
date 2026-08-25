@@ -4,8 +4,21 @@ set -euo pipefail
 
 VM_IP=$1
 
-podman tag "$VM_IP"/test:prometheus "$VM_IP"/test:3.4.2
-podman push  "$VM_IP"/test:3.4.2
+# Create a "3.4.2" registry tag for the prometheus image.
+# Prefer skopeo: `podman tag` + `podman push` can fail when the image was built
+# as a manifest list (non-CI default) if podman pruned the underlying blobs.
+if command -v skopeo >/dev/null 2>&1; then
+    skopeo copy --src-tls-verify=false --dest-tls-verify=false \
+        "docker://${VM_IP}/test:prometheus" "docker://${VM_IP}/test:3.4.2"
+elif command -v podman >/dev/null 2>&1; then
+    echo "skopeo not found; falling back to podman pull/tag/push"
+    podman pull --tls-verify=false "${VM_IP}/test:prometheus"
+    podman tag "${VM_IP}/test:prometheus" "${VM_IP}/test:3.4.2"
+    podman push --tls-verify=false "${VM_IP}/test:3.4.2"
+else
+    echo "ERROR: need skopeo or podman to retag prometheus image" >&2
+    exit 127
+fi
 
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
 helm repo add stable https://charts.helm.sh/stable

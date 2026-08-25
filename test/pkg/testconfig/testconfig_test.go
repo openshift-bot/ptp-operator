@@ -9,10 +9,211 @@ import (
 	ptpv1 "github.com/k8snetworkplumbingwg/ptp-operator/api/v1"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg"
 	testclient "github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/client"
+	l2lib "github.com/redhat-cne/l2discovery-lib"
+	"github.com/redhat-cne/l2discovery-lib/exports"
 	corev1 "k8s.io/api/core/v1"
 	apiextensions "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 )
+
+// mockL2Info implements l2lib.L2Info for unit testing preferDiffNodeSolution.
+type mockL2Info struct {
+	ifList []*exports.PtpIf
+}
+
+func (m *mockL2Info) GetPtpIfList() []*exports.PtpIf                    { return m.ifList }
+func (m *mockL2Info) GetPtpIfListUnfiltered() map[string]*exports.PtpIf { return nil }
+func (m *mockL2Info) GetLANs() *[][]int                                 { return nil }
+func (m *mockL2Info) GetPortsGettingPTP() []*exports.PtpIf              { return nil }
+func (m *mockL2Info) SetL2Client(kubernetes.Interface, *rest.Config)    {}
+
+func (m *mockL2Info) GetL2DiscoveryConfig(_, _, _ bool, _ string) (l2lib.L2Info, error) {
+	return m, nil
+}
+
+func makePtpIf(node, iface string) *exports.PtpIf {
+	return &exports.PtpIf{
+		IfClusterIndex: exports.IfClusterIndex{NodeName: node, InterfaceName: iface},
+	}
+}
+
+// setupPreferDiffNode wires up the package-level data and GlobalConfig so
+// preferDiffNodeSolution can run without the full solver/discovery stack.
+func setupPreferDiffNode(ifList []*exports.PtpIf, roleMap []int, solutions [][]int, problem string) {
+	data.solutions = map[string]*[][]int{problem: &solutions}
+	data.testClockRolesAlgoMapping = map[string]*[]int{problem: &roleMap}
+	GlobalConfig.L2Config = &mockL2Info{ifList: ifList}
+}
+
+// ocRoleMap returns the real OC role mapping: Slave1=0, Grandmaster=1
+func ocRoleMap() []int {
+	m := make([]int, NumTestClockRoles)
+	m[int(Slave1)] = 0
+	m[int(Grandmaster)] = 1
+	return m
+}
+
+// bcWithSlavesRoleMap returns the real BC-with-slaves mapping:
+// Slave1=0, BC1Master=1, BC1Slave=2, Grandmaster=3
+func bcWithSlavesRoleMap() []int {
+	m := make([]int, NumTestClockRoles)
+	m[int(Slave1)] = 0
+	m[int(BC1Master)] = 1
+	m[int(BC1Slave)] = 2
+	m[int(Grandmaster)] = 3
+	return m
+}
+
+func TestPreferDiffNodeSolution(t *testing.T) {
+	// Two-node lab topology modeled after real PTP CI clusters.
+	// Each node has an E810 NIC with two ports on the same PCI device.
+	twoNodeIfList := []*exports.PtpIf{
+		makePtpIf("cnfdg3.ptp.eng.rdu2.dc.redhat.com", "ens5f0"),  // 0
+		makePtpIf("cnfdg3.ptp.eng.rdu2.dc.redhat.com", "ens5f1"),  // 1
+		makePtpIf("cnfdf32.ptp.eng.rdu2.dc.redhat.com", "ens5f0"), // 2
+		makePtpIf("cnfdf32.ptp.eng.rdu2.dc.redhat.com", "ens5f1"), // 3
+	}
+
+	tests := []struct {
+		name      string
+		problem   string
+		ifList    []*exports.PtpIf
+		roleMap   []int
+		solutions [][]int
+		roles     []TestIfClockRoles
+		wantIdx   int
+	}{
+		{
+			// OC: GM on one node, Slave on another — first solution already good
+			name:    "OC with GM and Slave on different nodes picks first solution",
+			problem: AlgoOCString,
+			ifList:  twoNodeIfList,
+			roleMap: ocRoleMap(),
+			solutions: [][]int{
+				{2, 0}, // sol 0: Slave1->cnfdf32/ens5f0, GM->cnfdg3/ens5f0 — different nodes
+				{3, 1}, // sol 1: Slave1->cnfdf32/ens5f1, GM->cnfdg3/ens5f1 — different nodes
+			},
+			roles:   []TestIfClockRoles{Grandmaster, Slave1},
+			wantIdx: 0,
+		},
+		{
+			// OC: first solution has GM and Slave co-located, second splits them
+			name:    "OC skips same-node solution for GM and Slave",
+			problem: AlgoOCString,
+			ifList:  twoNodeIfList,
+			roleMap: ocRoleMap(),
+			solutions: [][]int{
+				{0, 1}, // sol 0: Slave1->cnfdg3/ens5f0, GM->cnfdg3/ens5f1 — same node
+				{0, 2}, // sol 1: Slave1->cnfdg3/ens5f0, GM->cnfdf32/ens5f0 — different nodes
+			},
+			roles:   []TestIfClockRoles{Grandmaster, Slave1},
+			wantIdx: 1,
+		},
+		{
+			// BC (without slaves): GM and BC1Slave co-located in first solution,
+			// preferDiffNodeSolution skips to the second.
+			name:    "BC skips same-node solution for GM and BC1Slave",
+			problem: AlgoBCString,
+			ifList:  twoNodeIfList,
+			roleMap: func() []int {
+				m := make([]int, NumTestClockRoles)
+				m[int(BC1Slave)] = 0
+				m[int(BC1Master)] = 1
+				m[int(Grandmaster)] = 2
+				return m
+			}(),
+			solutions: [][]int{
+				// sol 0: BC1Slave=cnfdg3, BC1Master=cnfdg3, GM=cnfdg3 — all same node
+				{0, 1, 1},
+				// sol 1: BC1Slave=cnfdg3, BC1Master=cnfdg3, GM=cnfdf32 — GM on different node
+				{0, 1, 2},
+			},
+			roles:   []TestIfClockRoles{Grandmaster, BC1Slave},
+			wantIdx: 1,
+		},
+		{
+			// OC single-node lab: only one node available. OC has no hard same-node
+			// constraint, so the solver may produce same-node solutions.
+			// preferDiffNodeSolution falls back to FirstSolution.
+			name:    "OC single-node lab falls back to FirstSolution",
+			problem: AlgoOCString,
+			ifList: []*exports.PtpIf{
+				makePtpIf("cnfdf32.ptp.eng.rdu2.dc.redhat.com", "ens5f0"), // 0
+				makePtpIf("cnfdf32.ptp.eng.rdu2.dc.redhat.com", "ens5f1"), // 1
+			},
+			roleMap: ocRoleMap(),
+			solutions: [][]int{
+				{0, 1}, // sol 0: Slave1=cnfdf32, GM=cnfdf32 — same node
+				{1, 0}, // sol 1: Slave1=cnfdf32, GM=cnfdf32 — same node
+			},
+			roles:   []TestIfClockRoles{Grandmaster, Slave1},
+			wantIdx: FirstSolution,
+		},
+		{
+			// BC with slaves: 3 roles across a two-node cluster.
+			// With only 2 nodes and 3 checked roles, no solution can split all three,
+			// so it falls back to FirstSolution.
+			name:    "BC with slaves falls back when 3 roles cannot span 2 nodes",
+			problem: AlgoBCWithSlavesString,
+			ifList:  twoNodeIfList,
+			roleMap: bcWithSlavesRoleMap(),
+			solutions: [][]int{
+				// sol 0: Slave1=cnfdg3, BC1Master=cnfdg3, BC1Slave=cnfdg3, GM=cnfdf32
+				//   GM differs from BC1Slave, but Slave1 == BC1Slave node
+				{0, 1, 0, 2},
+				// sol 1: Slave1=cnfdf32, BC1Master=cnfdf32, BC1Slave=cnfdf32, GM=cnfdg3
+				{2, 3, 2, 0},
+			},
+			roles:   []TestIfClockRoles{Grandmaster, BC1Slave, Slave1},
+			wantIdx: FirstSolution,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setupPreferDiffNode(tt.ifList, tt.roleMap, tt.solutions, tt.problem)
+			got := preferDiffNodeSolution(tt.problem, tt.roles...)
+			if got != tt.wantIdx {
+				t.Errorf("preferDiffNodeSolution() = %d, want %d", got, tt.wantIdx)
+			}
+		})
+	}
+}
+
+// TestPreferDiffNodeSolution_ThreeNodeCluster models a 3-node lab where all
+// roles can land on distinct nodes. This is the ideal multi-node scenario for
+// BC-with-slaves (Grandmaster, BC1Slave, Slave1 each on a separate node).
+func TestPreferDiffNodeSolution_ThreeNodeCluster(t *testing.T) {
+	ifList := []*exports.PtpIf{
+		makePtpIf("cnfdg3.ptp.eng.rdu2.dc.redhat.com", "ens5f0"),  // 0
+		makePtpIf("cnfdg3.ptp.eng.rdu2.dc.redhat.com", "ens5f1"),  // 1
+		makePtpIf("cnfdf32.ptp.eng.rdu2.dc.redhat.com", "ens5f0"), // 2
+		makePtpIf("cnfdf32.ptp.eng.rdu2.dc.redhat.com", "ens5f1"), // 3
+		makePtpIf("cnfdf33.ptp.eng.rdu2.dc.redhat.com", "ens5f0"), // 4
+		makePtpIf("cnfdf33.ptp.eng.rdu2.dc.redhat.com", "ens5f1"), // 5
+	}
+
+	roleMap := bcWithSlavesRoleMap()
+
+	solutions := [][]int{
+		// sol 0: Slave1=cnfdg3, BC1Master=cnfdg3, BC1Slave=cnfdg3, GM=cnfdf32
+		//   Slave1 and BC1Slave on same node (cnfdg3)
+		{0, 1, 0, 2},
+		// sol 1: Slave1=cnfdf33, BC1Master=cnfdf32, BC1Slave=cnfdf32, GM=cnfdg3
+		//   BC1Slave and Slave1 on different nodes, but BC1Master and BC1Slave share cnfdf32
+		//   (BC1Master is not in the checked roles, so this is fine)
+		//   GM=cnfdg3, BC1Slave=cnfdf32, Slave1=cnfdf33 — all checked roles on different nodes
+		{4, 3, 2, 0},
+	}
+
+	setupPreferDiffNode(ifList, roleMap, solutions, AlgoBCWithSlavesString)
+	got := preferDiffNodeSolution(AlgoBCWithSlavesString, Grandmaster, BC1Slave, Slave1)
+	if got != 1 {
+		t.Errorf("preferDiffNodeSolution() = %d, want 1", got)
+	}
+}
 
 const (
 	config1    = "config1"

@@ -82,11 +82,11 @@ podman-build-and-save-%:
 
 ifdef GITHUB_ACTIONS
 build-image:
-	podman build $(CACHE_FLAG) --network host --platform $(PLATFORM) -t ${IMG_PREFIX}:$(VAR) -f Dockerfile.$(VAR) ..
+	podman build $(CACHE_FLAG) --network host --platform $(PLATFORM) $(PODMAN_BUILD_ARGS) -t ${IMG_PREFIX}:$(VAR) -f Dockerfile.$(VAR) ..
 else
 build-image:
 	podman manifest create ${IMG_PREFIX}:$(VAR)
-	podman build $(CACHE_FLAG) --network host --platform $(PLATFORM) -f Dockerfile.$(VAR) --manifest ${IMG_PREFIX}:$(VAR) ..
+	podman build $(CACHE_FLAG) --network host --platform $(PLATFORM) $(PODMAN_BUILD_ARGS) -f Dockerfile.$(VAR) --manifest ${IMG_PREFIX}:$(VAR) ..
 endif
 
 ifdef GITHUB_ACTIONS
@@ -110,9 +110,13 @@ podman-cleanall: $(foreach v, $(VALUES), podman-clean-$(v))
 .PHONY: build-image clean-image deploy-all
 
 deploy-all: 
+	cp ../config/manager/env.yaml ../config/manager/env.yaml.bak
+	cp ../config/manager/kustomization.yaml ../config/manager/kustomization.yaml.bak
 	./scripts/customize-env.sh ${IMG_PREFIX} ../config/manager
 	cd ../config/manager && $(KUSTOMIZE) edit set image controller=${IMG_PREFIX}:ptpop
-	$(KUSTOMIZE) build ../config/default | kubectl apply -f -
+	$(KUSTOMIZE) build ../config/default | kubectl apply -f - ; \
+		mv -f ../config/manager/env.yaml.bak ../config/manager/env.yaml ; \
+		mv -f ../config/manager/kustomization.yaml.bak ../config/manager/kustomization.yaml
 	$(KUSTOMIZE) build ../config/custom | kubectl apply -f -
 	# Operator creates default asynchronously; ensure it exists before patch.
 	kubectl apply -n openshift-ptp -f ../config/samples/ptp_v1_ptpoperatorconfig.yaml

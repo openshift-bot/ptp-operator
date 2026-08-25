@@ -2,25 +2,48 @@
 set -euo pipefail
 
 export DKMS_MODE="${DKMS_MODE:-false}"
+# Stream child command output live (default: quiet, dump log only on failure).
+# Override with --verbose or RUN_ON_VM_VERBOSE=true|1|yes.
+RUN_ON_VM_VERBOSE="${RUN_ON_VM_VERBOSE:-false}"
 TEST_MODES="oc,bc,dualnicbc,dualnicbcha,dualfollower"
 RUN_PHASE="all"
 REGISTRY_IP=""
 TARBALL=""
+KEEP_TMP=true
 
 while [[ "${1:-}" == --* ]]; do
     case "$1" in
         --dkms)    export DKMS_MODE=true; shift ;;
+        --verbose) RUN_ON_VM_VERBOSE=true; shift ;;
         --mode)    TEST_MODES="$2"; shift 2 ;;
         --images)  RUN_PHASE="images"; shift ;;
         --deploy)  RUN_PHASE="deploy"; REGISTRY_IP="$2"; shift 2 ;;
         --load)    RUN_PHASE="load"; TARBALL="$2"; shift 2 ;;
+        --clean-tmp) KEEP_TMP=false; shift ;;
         *) echo "Unknown flag: $1"; exit 1 ;;
     esac
 done
 
-# Save full run output under /tmp/ptp-operator (timestamped file; also shown on the terminal).
-mkdir -p /tmp/ptp-operator
-RUN_ON_VM_LOG="/tmp/ptp-operator/run-on-vm-$(date +%Y%m%d-%H%M%S).log"
+case "${RUN_ON_VM_VERBOSE}" in
+  1|true|TRUE|yes|YES|on|ON) RUN_ON_VM_VERBOSE=true ;;
+  *) RUN_ON_VM_VERBOSE=false ;;
+esac
+export RUN_ON_VM_VERBOSE
+
+# Per-run temp directory shared by all child scripts.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PTP_RUN_DIR="${REPO_ROOT}/.local-runs/$(date +%Y%m%d-%H%M%S)"
+mkdir -p "${PTP_RUN_DIR}"
+cleanup_run_dir() {
+  if [[ "${KEEP_TMP}" == false ]]; then
+    rm -rf "${PTP_RUN_DIR}"
+  else
+    echo "Temp directory retained: ${PTP_RUN_DIR}"
+  fi
+}
+trap cleanup_run_dir EXIT
+
+RUN_ON_VM_LOG="${PTP_RUN_DIR}/run-on-vm.log"
 : >"${RUN_ON_VM_LOG}"
 exec > >(tee -a "${RUN_ON_VM_LOG}") 2>&1
 
@@ -73,14 +96,26 @@ read_ptp_tool_images() {
 }
 
 # Run with stdout/stderr captured; no output on success, On failure, print the command log.
+# With RUN_ON_VM_VERBOSE=true, stream output live (already teed to RUN_ON_VM_LOG).
 run_quiet_with_log_dump_on_failure() {
   local log_tag="$1"
   shift
 
   local log_file
-  log_file="$(mktemp "/tmp/ptp-operator/${log_tag// /_}.XXXXXX.log")"
+  log_file="$(mktemp "${PTP_RUN_DIR}/${log_tag// /_}.XXXXXX.log")"
 
   local rc
+  if [[ "${RUN_ON_VM_VERBOSE}" == true ]]; then
+    echo -e "${COLOR_GRAY}---- BEGIN ${log_tag} (verbose) ----${COLOR_RESET} ${COLOR_GRAY}@ $(log_ts)${COLOR_RESET}"
+    set +e
+    "$@" </dev/null
+    rc=$?
+    set -e
+    echo -e "${COLOR_GRAY}---- END ${log_tag} (verbose, exit ${rc}) ----${COLOR_RESET} ${COLOR_GRAY}@ $(log_ts)${COLOR_RESET}"
+    rm -f "${log_file}"
+    return "${rc}"
+  fi
+
   if "$@" >"${log_file}" 2>&1 </dev/null; then
     rc=0
   else
@@ -188,7 +223,7 @@ run_ptp_tools_parallel_make_step_rows() {
   done
   run_step_rows_begin "${rows[@]}"
 
-  local fifo="/tmp/ptp-operator/ptp-${fifo_tag}-done-$$.fifo"
+  local fifo="${PTP_RUN_DIR}/ptp-${fifo_tag}-done-$$.fifo"
   rm -f "${fifo}"
   mkfifo "${fifo}"
   exec 8<> "${fifo}"
@@ -259,17 +294,6 @@ run_quiet_with_log_dump_on_failure "install-tools" bash ./install-tools.sh
 export BASHRCSOURCED=1
 PS1="${PS1:-}" source ~/.bashrc
 
-step "Tidying and vendoring Go dependencies"
-run_step_rows_begin "go mod tidy" "go mod vendor"
-
-run_quiet_with_log_dump_on_failure "go-mod-tidy" go mod tidy
-run_step_row_done "go mod tidy"
-
-run_quiet_with_log_dump_on_failure "go-mod-vendor" go mod vendor
-run_step_row_done "go mod vendor"
-
-run_step_rows_end
-
 
 # ── Images phase (--images) ──────────────────────────────────────────
 if [[ "$RUN_PHASE" == "images" ]]; then
@@ -328,13 +352,13 @@ if [[ "$RUN_PHASE" == "load" ]]; then
 
     export IMG_PREFIX="$VM_IP/test"
 
-    mkdir -p /tmp/ptp-images-load
-    tar xf "$TARBALL" -C /tmp/ptp-images-load
+    mkdir -p "${PTP_RUN_DIR}/ptp-images-load"
+    tar xf "$TARBALL" -C "${PTP_RUN_DIR}/ptp-images-load"
 
     step "Retagging images for local registry"
     TAGS=(lptpd cep ptpop krp openvswitch prometheus ptpmg debug)
     for t in "${TAGS[@]}"; do
-        podman load -i "/tmp/ptp-images-load/$t.tar"
+        podman load -i "${PTP_RUN_DIR}/ptp-images-load/$t.tar"
     done
 
     OLD_PREFIX=$(podman images --format '{{.Repository}}:{{.Tag}}' | grep ":${TAGS[0]}$" | head -1 | sed "s/:${TAGS[0]}$//")
@@ -377,23 +401,29 @@ if [[ "$RUN_PHASE" == "all" || "$RUN_PHASE" == "deploy" ]]; then
     run_step_row_done "Building kind cluster..."
     run_step_rows_end
 
+    step "Applying certificate manifests"
+    run_quiet_with_log_dump_on_failure "kubectl-apply-certs" kubectl apply -f certs.yaml
+
+    step "Waiting for TLS certificates to be ready"
+    run_quiet_with_log_dump_on_failure "wait-cert-serving" ./retry.sh 60 5 kubectl wait certificate/serving-cert -n openshift-ptp --for=condition=Ready --timeout=5s
+    run_quiet_with_log_dump_on_failure "wait-cert-daemon" ./retry.sh 60 5 kubectl wait certificate/serving-cert-daemon -n openshift-ptp --for=condition=Ready --timeout=5s
+
     step "Deploying ptp-operator manifests"
     cd "${PTP_TOOLS_DIR}"
     run_quiet_with_log_dump_on_failure "make-deploy-all" sh -c "make deploy-all || true"
     cd -
 
-    step "Applying certificate manifests"
-    run_quiet_with_log_dump_on_failure "kubectl-apply-certs" kubectl apply -f certs.yaml
-
-    step "Fixing certificates"
-    run_quiet_with_log_dump_on_failure "retry-fix-certs" ./retry.sh 60 5 ./fix-certs.sh
-    sleep 5
-
-    step "Restarting ptp-operator pod"
-    run_quiet_with_log_dump_on_failure "kubectl-delete-pods" kubectl delete pods -l name=ptp-operator -n openshift-ptp
+    step "Patching webhook for cert-manager CA injection (kind)"
+    run_quiet_with_log_dump_on_failure "retry-patch-webhook-ca" ./retry.sh 60 5 bash -c 'kubectl patch validatingwebhookconfiguration ptpconfig-validating-webhook-configuration --type=strategic --patch-file kind-webhook-ca-patch.yaml && kubectl wait -f kind-webhook-ca-patch.yaml --for=jsonpath={.webhooks[0].clientConfig.caBundle} --timeout=5s'
 
     step "Waiting for ptp-operator rollout"
     run_quiet_with_log_dump_on_failure "kubectl-rollout-status" kubectl rollout status deployment ptp-operator -n openshift-ptp
+
+    # deploy-all may fail to create default while the webhook has no CA yet; the
+    # operator's one-shot createDefault also does not retry. Re-apply after CA
+    # injection so the patch below has an object to update.
+    step "Ensuring default ptpoperatorconfig exists"
+    run_quiet_with_log_dump_on_failure "retry-apply-ptpoperatorconfig" ./retry.sh 60 5 kubectl apply -n openshift-ptp -f ../config/samples/ptp_v1_ptpoperatorconfig.yaml
 
     # Patch ptpoperatorconfig to start events (in case it is not configured yet )
     step "Patching ptpoperatorconfig for event publishing"
